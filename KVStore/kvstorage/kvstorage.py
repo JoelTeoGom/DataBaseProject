@@ -104,6 +104,7 @@ class KVStorageSimpleService(KVStorageService):
 
     def transfer(self, keys_values: List[KeyValue]):
         for key_value in keys_values: # se añaden las keys y valores a la lista de keys y valores
+            print(f'transfering asasas assas key: {key_value.key}  value:  {key_value.value}')
             self.data[key_value.key] = key_value.value
 
 

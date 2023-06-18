@@ -44,6 +44,7 @@ class ShardMasterSimpleService(ShardMasterService):
     def __init__(self):
         self.manager = Manager()
         self.node_dict = self.manager.dict()
+        self.previous_node_dict = self.manager.dict()
         self.servers = self.manager.list()
         self.lock = Lock()
         self.storage_service = KVStoreStub(grpc.insecure_channel("localhost:50051"))
@@ -56,44 +57,32 @@ class ShardMasterSimpleService(ShardMasterService):
     def join(self, server: str):
         with self.lock:
             if server not in self.servers:
-                self.show_server_ranges()
-                self.servers.append(server)
-                self.recalculate_shards()
-                self.redistribute_all_keys()  # Redistribuir todas las claves entre los servidores
-                print(f"New Join ({server}), Servers -> {self.servers}")
-                print(f"Shards -> {self.node_dict}")
-                self.show_server_ranges()
+                if len(self.servers) == 0:
+                    # Si es el primer servidor, se le asignan todas las claves
+                    self.node_dict[server] = (0, 99)
+                    self.previous_node_dict = self.node_dict.copy()
+                    self.servers.append(server)
+                else:
+                    self.show_server_ranges()
+                    self.servers.append(server)
+                    self.redistribute_all_keys()  # Redistribuir todas las claves entre los servidores
+                    print(f"New Join ({server}), Servers -> {self.servers}")
+                    print(f"Shards -> {self.node_dict}")
+                    self.show_server_ranges()
 
     def leave(self, server: str):
         if server in self.servers:
             self.lock.acquire()
             try:
                 self.servers.remove(server)
+                self.previous_node_dict.pop(server, None)  # Eliminar el nodo anterior de previous_node_dict
                 del self.node_dict[server]
                 if len(self.servers) >= 1:
-                    self.recalculate_shards()
-                    self.redistribute_all_keys()  # Redistribuir todas las claves entre los servidores
+                    self.redistribute_all_keys()
             finally:
                 self.lock.release()
             print(f"New Leave ({server}), Servers -> {self.servers}")
             print(f"Shards -> {self.node_dict}")
-
-    def recalculate_shards(self):
-        total_servers = len(self.servers)
-        total_keys = 100
-
-        if total_servers == 0:
-            return
-
-        avg_keys_per_server = total_keys // total_servers
-        remaining_keys = total_keys % total_servers
-
-        lower_val = 0
-        for i, server in enumerate(self.servers):
-            keys_count = avg_keys_per_server + (1 if i < remaining_keys else 0)
-            upper_val = lower_val + keys_count - 1
-            self.node_dict[server] = (lower_val, upper_val)
-            lower_val = upper_val + 1
 
     def query(self, key):
         for address in self.servers:
@@ -115,6 +104,7 @@ class ShardMasterSimpleService(ShardMasterService):
         for i, server in enumerate(self.servers):
             keys_count = avg_keys_per_server + (1 if i < remaining_keys else 0)
             upper_val = lower_val + keys_count - 1
+            self.previous_node_dict[server] = self.node_dict.get(server, (None, None))  # Almacenar el nodo anterior
             self.node_dict[server] = (lower_val, upper_val)
             lower_val = upper_val + 1
 
@@ -123,6 +113,8 @@ class ShardMasterSimpleService(ShardMasterService):
             keys = (self.node_dict[server][0], self.node_dict[server][1])
             destination = self.servers[(i + 1) % num_servers]
             grpc_redistribute(server, destination, keys)
+
+        self.previous_node_dict = self.node_dict.copy()  # Actualizar el nodo anterior
 
 
 class ShardMasterServicer(ShardMasterServicer):
